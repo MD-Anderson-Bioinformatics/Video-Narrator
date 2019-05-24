@@ -1,0 +1,7 @@
+{ "name": "video-narrator"
+, "description": "Use google voice to narrate an audio track for a video"
+, "version": "0.1.0"
+, "author": "Bradley Broom <bmbroom@mdanderson.org> (https://bioinformatics.mdanderson.org/faculty/bradley-broom/)"
+, "license": "GPL-3.0-or-later"
+, "repository": "github:MD-Anderson-Bioinformatics/Video-Narrator"
+}
