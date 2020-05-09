@@ -1,4 +1,4 @@
-FROM node:12.2-alpine
+FROM node:12.16-alpine
 
 RUN apk add ffmpeg
 

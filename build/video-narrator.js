@@ -14,6 +14,7 @@ const fragCache = 'fragment-cache/';
 const audioFormat = 'OGG_OPUS';
 const audioExt = '.ogg';
 const debug = false;
+const minGap = 0.1;
 
 // Create a text-to-speechclient.
 const client = new textToSpeech.TextToSpeechClient();
@@ -22,12 +23,18 @@ const client = new textToSpeech.TextToSpeechClient();
 var audioOptions = {};
 var voiceOptions = {};
 var overwrite = false;
+var verbose = false;
 
+// Create a cache for contents of JSON files.
+const jsonCache = {};
 
 // Read JSON-formatted content from the specified file.
 async function getJSON (filename) {
-        const content = fs.readFileSync(filename);
-	return JSON.parse (content);
+	if (!jsonCache.hasOwnProperty(filename)) {
+	    const content = fs.readFileSync(filename);
+	    jsonCache[filename] = JSON.parse (content);
+	}
+	return jsonCache[filename];
 }
 
 // Convert a speech fragment into speech, if necessary.
@@ -45,23 +52,36 @@ async function getJSON (filename) {
 // source file to the check file so that subsequent calls
 // don't needlessly reconvert the input.
 //
-async function convertAudio (fragSourceFile) {
-    let sourceType, outputFile, checkFile;
+async function convertAudio (fragSourceFile, voiceOptions, audioOptions) {
+    let sourceType, outputFile, checkFile, optionsFile, optionCheckFile;
     if (debug) console.log ('Fragment source file: ' + fragSourceFile);
     if (fragSourceFile.match(/.ssml$/)) {
 	sourceType = 'ssml';
 	outputFile = fragSourceFile.replace(/.ssml$/, audioExt);
 	checkFile = fragSourceFile.replace(/.ssml$/, '.check');
+	optionsFile = fragSourceFile.replace(/.ssml$/, '.json');
+	optionCheckFile = fragSourceFile.replace(/.ssml$/, '.jsoncheck');
     } else if (fragSourceFile.match(/.text$/)) {
 	sourceType = 'text';
 	outputFile = fragSourceFile.replace(/.text$/, audioExt);
 	checkFile = fragSourceFile.replace(/.text$/, '.check');
+	optionsFile = fragSourceFile.replace(/.text$/, '.json');
+	optionCheckFile = fragSourceFile.replace(/.text$/, '.jsoncheck');
     } else {
         throw new Error ('fragSourceFile must end with .text or .ssml');
     }
     if (debug) console.log('convertAudio: Process as ' + sourceType + ' output to ' + outputFile);
+    // Write fragment options to file:
+    const optionsAsString = JSON.stringify({
+	voice: voiceOptions,
+	audio: audioOptions
+    })+'\n';
+    await writeFile(optionsFile, optionsAsString, 'utf8');
+    if (debug) console.log('Fragment options written to file: ' + optionsFile);
+    // Continue only if fragment content or options have changed:
     let res = spawnSync ('/usr/bin/cmp', [ '-s', fragSourceFile, checkFile ]);
-    if (res.status === 0) {
+    let optres = spawnSync ('/usr/bin/cmp', [ '-s', optionsFile, optionCheckFile ]);
+    if (res.status === 0 && optres.status === 0) {
 	if (debug) console.log ('Arg up to date, skipping: ' + fragSourceFile);
 	return;
     }
@@ -79,25 +99,28 @@ async function convertAudio (fragSourceFile) {
     }
 
 
-    // Construct the request
+    // Construct the request:
     const request = {
         input: {},
         // Select the language and SSML Voice Gender (optional)
 	// voiceOptions override all defaults.
-        voice: Object.assign ({}, { languageCode: 'en-US', ssmlGender: 'NEUTRAL' }, voiceOptions),
+        voice: voiceOptions,
         // Select the type of audio encoding
 	// audioOptions do not override audio format.
         audioConfig: Object.assign ({}, audioOptions, { audioEncoding: audioFormat }),
     };
     request.input[sourceType] = content;
 
-    // Performs the Text-to-Speech request
+    // Perform the Text-to-Speech request:
     const [response] = await client.synthesizeSpeech(request);
-    // Write the binary audio content to a local file
+    // Write the binary audio content to a local file:
     await writeFile(outputFile, response.audioContent, 'binary');
     if (debug) console.log('Audio content written to file: ' + outputFile);
+    // Write fragment details to check files to avoid future duplicate conversions:
     await writeFile(checkFile, content, 'utf8');
-    if (debug) console.log('Source content written to file: ' + checkFile);
+    if (debug) console.log('Source content written to check file: ' + checkFile);
+    await writeFile(optionCheckFile, optionsAsString, 'utf8');
+    if (debug) console.log('Option content written to check file: ' + checkOptionFile);
 }
 
 
@@ -121,7 +144,7 @@ async function parseScript (scriptFile) {
 	for (let idx=0; idx < input.length; idx++) {
 	    if (input[idx] === '') continue;
 	    let ff = input[idx].split(' ');
-	    if (ff.length !== 2) {
+	    if (ff.length < 2) {
 		console.log('Misformed fragment spec on line ' + (idx+1) + ': ' + input[idx]);
 		bad = true;
 		break;
@@ -132,8 +155,31 @@ async function parseScript (scriptFile) {
 	    let fragment = {
 	        startTime: time,
 	        fragmentName: ff[1],
-	        content: []
+	        content: [],
+		audioOptions: Object.assign ({}, audioOptions),
+		voiceOptions: Object.assign ({}, { languageCode: 'en-US', ssmlGender: 'NEUTRAL' }, voiceOptions)
 	    };
+	    // Process fragment options, if any
+	    for (let fidx = 2; fidx < ff.length; fidx++) {
+		const oparts = ff[fidx].split('=');
+		if (oparts.length !== 2) {
+		    console.log('Misformed fragment option on line ' + (idx+1) + ': ' + ff[fidx]);
+		    continue;
+		}
+		if (oparts[0] === 'audio') {
+	            fragment.audioOptions = Object.assign (fragment.audioOptions, await getJSON (oparts[1]));
+		} else if (oparts[0] === 'voice') {
+	            fragment.voiceOptions = Object.assign (fragment.voiceOptions, await getJSON (oparts[1]));
+		} else {
+		    console.log('Unknown fragment option on line ' + (idx+1) + ': ' + ff[fidx]);
+		    continue;
+		}
+	    }
+	    if (verbose) {
+		console.log ('Fragment:');
+		console.log ({ name: fragment.fragmentName, voice: fragment.voiceOptions, audio: fragment.audioOptions });
+	    }
+	    // Read remaining lines in fragment
 	    while (input[idx+1] !== '') {
 		idx++;
 		fragment.content.push(input[idx]);
@@ -221,14 +267,20 @@ async function combineAudio (fragments, outfile) {
     return res.status === 0;
 }
 
-function processOption (args) {
+// Process the command line option in args[0].
+// Returns the number of additional args used.
+async function processOption (args) {
     if (args[0].match(/^-audio$/) && args.length > 1) {
-	audioOptions = getJSON (args[1]);
+	audioOptions = await getJSON (args[1]);
 	return 1;
     }
     if (args[0].match(/^-voice$/) && args.length > 1) {
-	voiceOptions = getJSON (args[1]);
+	voiceOptions = await getJSON (args[1]);
 	return 1;
+    }
+    if (args[0].match(/^-v$/)) {
+        verbose = true;
+	return 0;
     }
     if (args[0].match(/^-y$/)) {
         overwrite = true;
@@ -250,7 +302,7 @@ async function main() {
   for (let idx = 2; idx < process.argv.length; idx++) {
     const arg = process.argv[idx];
     if (arg.match (/^-./)) {
-        idx += processOption (process.argv.slice (idx));
+        idx += await processOption (process.argv.slice (idx));
 	continue;
     }
     const fragments = await parseScript (arg);
@@ -261,7 +313,7 @@ async function main() {
 	    const fragmentFile = fragCache + fragment.fragmentName + '.ssml';
 	    await writeFile(fragmentFile, fragment.content.join('\n')+'\n', 'utf8');
 	    if (debug) console.log('Source content written to file: ' + fragmentFile);
-	    await convertAudio (fragmentFile);
+	    await convertAudio (fragmentFile, fragment.voiceOptions, fragment.audioOptions);
 	}
 	let bad = false;
 	for (let chidx = 0; chidx < fragments.length; chidx++) {
@@ -278,17 +330,21 @@ async function main() {
 		for (let chidx = 0; chidx < fragments.length; chidx++) {
 		    const fragment = fragments[chidx];
 		    if (fragment.startTime < currentTime) {
-			console.log ('Fragment ' + fragment.fragmentName + ' overlaps previous content - delaying to ' + (currentTime + 0.1));
-			fragment.startTime = currentTime + 0.1;
-		    } else if (fragment.startTime < currentTime + 0.1) {
-			console.log ('Fragment ' + fragment.fragmentName + ' nearly overlaps previous content - delaying to ' + (currentTime + 0.1));
-			fragment.startTime = currentTime + 0.1;
+			console.log ('Fragment ' + fragment.fragmentName + ' overlaps previous content - delaying to ' + (currentTime + minGap));
+			fragment.startTime = currentTime + minGap;
+		    } else if (fragment.startTime < currentTime + minGap) {
+			console.log ('Fragment ' + fragment.fragmentName + ' nearly overlaps previous content - delaying to ' + (currentTime + minGap));
+			fragment.startTime = currentTime + minGap;
 		    }
 		    if (debug) {
 		        console.log ('Silence: ' + (fragment.startTime - currentTime));
 		        console.log (fragment.fragmentName + ' (' + fragment.duration + ')');
 		    }
 		    currentTime = fragment.startTime + fragment.duration;
+		    if (verbose) {
+		    	console.log ('Fragment ' + fragment.fragmentName + ':');
+			console.log ({ start: fragment.startTime, duration: fragment.duration, finish: currentTime });
+		    }
 		}
 		if (debug) console.log ('Finished at ' + currentTime);
 		const outname = arg.match(/\./) ? arg.replace(/\.[^.]*$/, audioExt) : arg + audioExt;
