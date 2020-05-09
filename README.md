@@ -29,7 +29,15 @@ SSML text.
 blank line
 ```
 
-The format of start time is `[[hours:]minutes:]seconds[.milliseconds]`.
+The format of start time is `[+][[hours:]minutes:]seconds[.milliseconds]`.
+
+If a leading `+` is specified, the time is relative to the end of the previous fragment.  If the
+time is omitted, it defaults to 0.1 seconds. If specified, no minimum gap is required. (Use +0 to
+force immediate concatenation.)
+
+Otherwise, the time must be specified and is relative to the start of the audio.  If the specified time
+is before or too close to the end of the previous fragment, the fragment will be delayed to ensure
+at least a small delay (0.1 seconds) between the two fragments.
 
 The fragment-name is used for issuing informative errors or messages and for saving
 the generated audio in a cache to avoid repeated conversions of the same text.
@@ -74,4 +82,4 @@ the audio output file already exists.</dd>
 <dd>Override the default voice options.  File should contain a text-to-speech VoiceSelectionParams object in JSON format. File should be in the current directory so that it's available inside the docker container.</dd>
 </dl>
 
-Voice Narrator caches the translation of individual fragments in a subdirectory `fragment-cache` to avoid translating the same text multiple times during iterative script development.  If you change the audio or voice parameters you should empty the contents of this cache (`rm fragment-cache/*`) before running the narrator script.
+Voice Narrator caches the translation of individual fragments in a subdirectory `fragment-cache` to avoid translating the same text multiple times during iterative script development.

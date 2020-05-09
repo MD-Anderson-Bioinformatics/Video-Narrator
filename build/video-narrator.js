@@ -149,10 +149,18 @@ async function parseScript (scriptFile) {
 		bad = true;
 		break;
 	    }
-	    let time = ff[0].split (':');
-	    time=time.reduce((tt, t) => tt*60 + +t, 0);
+	    let time = ff[0];
+	    const relative = time.substr(0,1) === '+';
+	    if (relative) time = time.substr(1);
+	    if (relative && time === "") {
+		// Unspecified relative time. Default to minGap.
+	        time = minGap;
+	    } else {
+	        time = time.split(':').reduce((tt, t) => tt*60 + +t, 0);
+	    }
 	    if (debug) console.log ('Fragment ' + ff[1] + ' at ' + time + ' seconds.');
 	    let fragment = {
+		relative: relative,
 	        startTime: time,
 	        fragmentName: ff[1],
 	        content: [],
@@ -329,7 +337,11 @@ async function main() {
 		let currentTime = 0;
 		for (let chidx = 0; chidx < fragments.length; chidx++) {
 		    const fragment = fragments[chidx];
-		    if (fragment.startTime < currentTime) {
+		    if (fragment.relative) {
+			// Adjust relative fragment to current time. Do not
+			// enforce minGap.
+			fragment.startTime = currentTime + fragment.startTime;
+		    } else if (fragment.startTime < currentTime) {
 			console.log ('Fragment ' + fragment.fragmentName + ' overlaps previous content - delaying to ' + (currentTime + minGap));
 			fragment.startTime = currentTime + minGap;
 		    } else if (fragment.startTime < currentTime + minGap) {
